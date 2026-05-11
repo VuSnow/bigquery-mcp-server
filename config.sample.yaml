@@ -1,0 +1,93 @@
+mcp:
+  name: "BigQuery MCP Server"
+  version: "0.1.0"
+
+bigquery:
+  project: "my-gcp-project"
+  default_region: "US"
+  # key_file: "path/to/service-account.json"
+  datasets:
+    - "analytics"
+    - "sales"
+
+guardrails:
+  max_rows: 1000
+  default_limit: 100
+  max_query_length: 10000
+  max_bytes_billed: 171798691840  # 160 GiB
+
+pii_masking:
+  - name: "email"
+    method: "hash"
+  - name: "phone_number"
+    method: "redact"
+
+tables:
+  - name: "analytics.fact_orders"
+    purpose: "All completed and pending orders with amounts and status"
+    tags: ["orders", "revenue", "transactions"]
+    partition_by: "order_date"
+    schema:
+      - name: "order_id"
+        type: "STRING"
+        description: "Unique order identifier"
+      - name: "customer_id"
+        type: "STRING"
+        description: "Customer who placed the order"
+      - name: "order_date"
+        type: "DATE"
+        description: "Date the order was placed"
+      - name: "status"
+        type: "STRING"
+        description: "Order status: pending, completed, cancelled, refunded"
+      - name: "amount"
+        type: "FLOAT64"
+        description: "Total order amount in USD"
+      - name: "country"
+        type: "STRING"
+        description: "Customer country code (ISO 3166-1 alpha-2)"
+    constraints:
+      required_filters: ["order_date"]
+      max_days_back: 365
+    join_rules:
+      - table: "analytics.dim_customers"
+        key: "customer_id"
+        type: "many_to_one"
+    allowed_operations: ["SELECT", "COUNT", "SUM", "AVG", "GROUP BY", "ORDER BY"]
+    example_queries:
+      - question: "How many orders last month?"
+        sql: "SELECT COUNT(*) FROM analytics.fact_orders WHERE order_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 1 MONTH)"
+      - question: "Total revenue by country this year?"
+        sql: "SELECT country, SUM(amount) AS total_revenue FROM analytics.fact_orders WHERE order_date >= DATE_TRUNC(CURRENT_DATE(), YEAR) AND status = 'completed' GROUP BY country ORDER BY total_revenue DESC"
+
+  - name: "analytics.dim_customers"
+    purpose: "Customer dimension table with demographics and contact info"
+    tags: ["customers", "dimension"]
+    schema:
+      - name: "customer_id"
+        type: "STRING"
+        description: "Unique customer identifier"
+      - name: "name"
+        type: "STRING"
+        description: "Customer full name"
+      - name: "email"
+        type: "STRING"
+        description: "Customer email address (PII)"
+      - name: "phone_number"
+        type: "STRING"
+        description: "Customer phone number (PII)"
+      - name: "country"
+        type: "STRING"
+        description: "Customer country code"
+      - name: "created_at"
+        type: "TIMESTAMP"
+        description: "Account creation timestamp"
+    constraints: {}
+    join_rules:
+      - table: "analytics.fact_orders"
+        key: "customer_id"
+        type: "one_to_many"
+    allowed_operations: ["SELECT", "COUNT", "GROUP BY", "ORDER BY"]
+    example_queries:
+      - question: "How many customers per country?"
+        sql: "SELECT country, COUNT(*) AS customer_count FROM analytics.dim_customers GROUP BY country ORDER BY customer_count DESC"
