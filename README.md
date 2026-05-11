@@ -174,7 +174,7 @@ execute_query(sql)
 | Phase | Status | Description |
 |-------|--------|-------------|
 | 1 | ✅ Done | Project setup: `pyproject.toml`, FastMCP server skeleton, configs, `.env.example` |
-| 2 | 🔲 | Client layer: `BigQueryClient` (base + metadata + discovery + query + ddl mixins) |
+| 2 | ✅ Done | Client layer: `BigQueryClient` (base + metadata + discovery + query + ddl mixins) |
 | 3 | 🔲 | Service layer: `ConnectionManager` + `BigQueryService` (base + metadata + discovery + query) |
 | 4 | 🔲 | Guardrails: security validator, YAML validator, query rewriter, rate limiter, audit logger |
 | 5 | 🔲 | PII masker + YAML config parser |
