@@ -159,28 +159,23 @@ Every `execute_query` call passes through the full guardrails pipeline:
 
 ## Tools (9)
 
-### Metadata Tools
+| Tool | Description | Params |
+|------|-------------|--------|
+| `list_datasets` | List all accessible BigQuery datasets with location | <ul><li>`connection` — Connection name. Default: default connection</li></ul> |
+| `list_tables` | List all tables in a dataset with row counts | <ul><li>`dataset` — Dataset ID (e.g., `"analytics"`)</li><li>`connection` — Connection name (optional, auto-routes)</li></ul> |
+| `get_table_schema` | Get column definitions + partition/clustering info | <ul><li>`table_name` — Fully qualified name (`dataset.table` or `project.dataset.table`)</li><li>`connection` — Connection name (optional, auto-routes)</li></ul> |
+| `describe_table` | Get live DDL (CREATE TABLE statement) | <ul><li>`table_name` — Fully qualified table name</li><li>`connection` — Connection name (optional, auto-routes)</li></ul> |
+| `get_column_values` | Get distinct values for a column (live query) | <ul><li>`table_name` — Fully qualified table name</li><li>`column` — Column name</li><li>`limit` — Max distinct values. Default: `50`</li><li>`connection` — Connection name (optional, auto-routes)</li></ul> |
+| `dry_run_query` | Validate SQL + estimate bytes/cost (no execution) | <ul><li>`query` — SQL query (SELECT/WITH only)</li><li>`connection` — Connection name (optional)</li></ul> |
+| `execute_query` | Run query with full guardrails pipeline | <ul><li>`query` — SQL query (SELECT/WITH only)</li><li>`connection` — Connection name (optional, auto-routes)</li></ul> |
+| `explain_query_error` | Analyze BQ error + suggest fixes for retry loops | <ul><li>`error_message` — The error message from a failed query</li><li>`query` — The SQL query that produced the error</li></ul> |
+| `get_status` | Get connections health, guardrail config, rate limit | *(none)* |
 
-| # | Tool | Description |
-|---|------|-------------|
-| 1 | `list_datasets` | List datasets for a connection (or default) |
-| 2 | `list_tables` | List tables in a dataset (auto-routes connection) |
-| 3 | `get_table_schema` | Column definitions + partition/clustering info |
-| 4 | `describe_table` | Live DDL (CREATE TABLE statement) |
-| 5 | `get_column_values` | Distinct values for a column (live query) |
+> **Auto-routing**: When `connection` is omitted, the server resolves the correct connection from YAML config based on dataset/table name. Zero config needed per-call.
+>
+> **Read-only**: All query tools enforce read-only mode. Only `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, `EXPLAIN` are allowed.
 
-### Query Tools
-
-| # | Tool | Description |
-|---|------|-------------|
-| 6 | `dry_run_query` | Validate SQL + estimate bytes/cost (no execution) |
-| 7 | `execute_query` | Run query with full guardrails pipeline |
-| 8 | `explain_query_error` | Parse BQ error + suggest fix for retry loops |
-| 9 | `get_status` | Connections health, guardrail config, rate limit usage |
-
-### Tool Parameters
-
-All metadata tools accept an optional `connection` parameter. If omitted, auto-routing resolves the connection:
+### Usage Examples
 
 ```python
 # Explicit connection
