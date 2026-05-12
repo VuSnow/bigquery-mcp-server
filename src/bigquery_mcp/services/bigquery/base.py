@@ -3,38 +3,81 @@ from __future__ import annotations
 
 import re
 import logging
-from typing import Any, Dict, List
+from typing import Optional
 
-from bigquery_mcp.services.connection_manager import connection_manager, ConnectionState
+from bigquery_mcp.services.connection_manager import connection_manager
 from bigquery_mcp.clients.bigquery import BigQueryClient
-from bigquery_mcp.configs import configs
 
 logger = logging.getLogger(__name__)
 
 
 class BaseBigQueryService:
-    """Base service — provides auto-connect, validation, and policy enforcement."""
+    """Base service — provides connection routing, validation, and access control."""
 
-    def _ensure_connected(self) -> BigQueryClient:
-        """Auto-connect if not connected. Returns the active client."""
-        if connection_manager.state != ConnectionState.CONNECTED:
-            logger.info("[connection] State=%s — initiating auto-connect", connection_manager.state.value)
-            connection_manager.connect()
-            logger.info("[connection] Auto-connect successful")
-        return connection_manager.get_client()
+    def _get_client(self, connection: Optional[str] = None, table_name: Optional[str] = None) -> BigQueryClient:
+        """Get the BigQuery client for a connection.
 
-    def _check_read_only(self) -> None:
-        """Raise if server is in read-only mode and a write is attempted."""
-        if configs.read_only:
-            logger.warning("[policy] Write operation blocked — server is in READ_ONLY mode")
-            raise PermissionError("Write operations are disabled in read-only mode.")
+        Resolution order:
+        1. Explicit connection name passed
+        2. Auto-resolve from table_name
+        3. Default connection
+        """
+        if connection:
+            return connection_manager.get_client(connection)
+
+        if table_name:
+            from bigquery_mcp.utils.config_parser import config_parser
+            resolved = config_parser.resolve_connection_for_table(table_name)
+            return connection_manager.get_client(resolved)
+
+        return connection_manager.get_default_client()
+
+    def _resolve_connection_name(self, connection: Optional[str] = None, table_name: Optional[str] = None) -> str:
+        """Resolve the connection name (without connecting)."""
+        if connection:
+            return connection
+
+        from bigquery_mcp.utils.config_parser import config_parser
+        if table_name:
+            return config_parser.resolve_connection_for_table(table_name)
+        return config_parser.get_default_connection_name()
+
+    def _check_table_accessible(self, table_name: str) -> None:
+        """Raise if table is blocked."""
+        from bigquery_mcp.utils.config_parser import config_parser
+
+        if config_parser.is_table_blocked(table_name):
+            raise PermissionError(f"Table '{table_name}' is blocked by configuration.")
+
+    def _check_cross_connection(self, table_names: list[str]) -> None:
+        """Raise if tables span multiple connections and forbid_cross_connection is true."""
+        from bigquery_mcp.utils.config_parser import config_parser
+
+        guardrails = config_parser.get_guardrails()
+        if not guardrails.get("forbid_cross_connection", False):
+            return
+
+        connections = set()
+        for table in table_names:
+            conn = config_parser.resolve_connection_for_table(table)
+            connections.add(conn)
+
+        if len(connections) > 1:
+            raise PermissionError(
+                f"Query spans multiple connections ({connections}). "
+                "Cross-connection queries are forbidden by configuration."
+            )
+
+    def _get_guardrails(self, connection: Optional[str] = None) -> dict:
+        """Get effective guardrails (global + connection override)."""
+        from bigquery_mcp.utils.config_parser import config_parser
+        return config_parser.get_effective_guardrails(connection)
 
     def _validate_table_name(self, table_name: str) -> str:
         """Validate and sanitize table name format.
 
         Accepts: dataset.table or project.dataset.table
         Returns: sanitized table name.
-        Raises: ValueError if invalid.
         """
         if not table_name or not table_name.strip():
             raise ValueError("Table name cannot be empty.")
@@ -72,33 +115,18 @@ class BaseBigQueryService:
             raise ValueError(f"Invalid column name: '{column}'.")
         return column
 
-    def _check_datasets_filter(self, dataset: str) -> None:
-        """Raise if dataset is not in the configured filter (when filter is set)."""
-        if not configs.datasets_filter:
-            return
-        allowed = [d.strip() for d in configs.datasets_filter.split(",") if d.strip()]
-        if allowed and dataset not in allowed:
-            raise PermissionError(
-                f"Dataset '{dataset}' is not in the allowed list. "
-                f"Allowed: {', '.join(allowed)}"
-            )
-
-    def _check_table_accessible(self, table_name: str) -> None:
-        """Raise if table is blocked or not accessible in current mode.
-
-        Checks:
-        1. Blocked tables (always enforced)
-        2. In yaml_only mode: table must be in YAML whitelist
-        """
+    def _check_datasets_filter(self, dataset: str, connection: Optional[str] = None) -> None:
+        """Raise if dataset is not in the connection's datasets filter."""
         from bigquery_mcp.utils.config_parser import config_parser
 
-        if config_parser.is_table_blocked(table_name):
-            raise PermissionError(f"Table '{table_name}' is blocked by configuration.")
+        conn_name = connection or config_parser.get_default_connection_name()
+        conn_config = config_parser.get_connection_config(conn_name)
+        if not conn_config:
+            return
 
-        if configs.table_access_mode == "yaml_only":
-            whitelisted = config_parser.get_whitelisted_table_names()
-            if table_name not in whitelisted:
-                raise PermissionError(
-                    f"Table '{table_name}' is not in the YAML whitelist. "
-                    f"Access mode is 'yaml_only'."
-                )
+        allowed = conn_config.get("datasets", [])
+        if allowed and dataset not in allowed:
+            raise PermissionError(
+                f"Dataset '{dataset}' is not in the allowed list for connection '{conn_name}'. "
+                f"Allowed: {', '.join(allowed)}"
+            )

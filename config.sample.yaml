@@ -1,39 +1,73 @@
-# BigQuery MCP Server — YAML Configuration
-# This file contains GUARDRAILS ONLY — no domain knowledge.
-# Table descriptions, join rules, and examples belong in the Text2SQL agent layer.
+# BigQuery MCP Server — Single YAML Configuration
+# All settings, connections, guardrails, and table constraints live here.
+# Only env var needed: CONFIG_FILE_PATH (defaults to config.yaml)
 
-settings:
-  table_access_mode: "hybrid"  # yaml_only | auto_discovery | hybrid
+mcp:
+  name: bigquery-mcp
+  version: 0.3.0
+
+bq:
+  # Multi-connection support: define named connections, set a default.
+  default_connection: prod-us
+  connections:
+    prod-us:
+      project: your-prod-project
+      default_region: US
+      key_file: /secrets/prod-us-sa.json
+      datasets:                       # optional dataset filter
+        - analytics
+        - sales
+
+    staging-eu:
+      project: your-staging-project
+      default_region: europe-west4
+      key_file: /secrets/staging-eu-sa.json
+      datasets:
+        - staging_analytics
+      max_bytes_billed: 5368709120    # per-connection override (5 GiB)
 
 guardrails:
-  max_rows: 1000
+  read_only: true
   default_limit: 100
-  max_bytes_billed: 10737418240  # 10 GiB
+  max_limit: 1000
+  max_bytes_billed: 10737418240      # 10 GiB global default
+  max_query_length: 10000
+  forbid_cross_connection: true      # block queries spanning multiple connections
+  rate_limit:
+    max_calls: 100
+    window_seconds: 3600
 
-pii_masking:
-  - name: "email"
-    method: "hash"
-  - name: "phone_number"
-    method: "redact"
-  - name: "full_name"
-    method: "redact"
+pii:
+  - column: email
+    method: hash
+  - column: phone_number
+    method: redact
+  - column: ssn
+    method: redact
 
-# Per-table constraints (guardrails only)
+# Per-table constraints (guardrails overlay)
 tables:
-  - name: "analytics.fact_orders"
+  - name: analytics.fact_orders
+    connection: prod-us
     constraints:
-      required_filters: ["order_date"]
+      required_filters: [order_date]
       max_days_back: 365
       disallowed_patterns: ["SELECT *"]
-    allowed_operations: ["SELECT", "COUNT", "SUM", "AVG", "GROUP BY", "ORDER BY"]
+    allowed_operations: [SELECT, COUNT, SUM, AVG, GROUP BY, ORDER BY]
 
-  - name: "analytics.dim_customers"
+  - name: analytics.dim_customers
+    connection: prod-us
     constraints:
       disallowed_patterns: ["SELECT *", "LIKE '%@%'"]
-    allowed_operations: ["SELECT", "COUNT", "GROUP BY", "ORDER BY"]
+    allowed_operations: [SELECT, COUNT, GROUP BY, ORDER BY]
 
-# Explicit deny list (overrides everything, supports glob patterns)
+  - name: staging_analytics.experiment_results
+    connection: staging-eu
+    constraints:
+      max_days_back: 30
+
+# Explicit deny list (supports glob patterns)
 blocked_tables:
-  - "internal.pii_raw_data"
-  - "internal.audit_logs"
+  - "internal.*"
   - "temp.*"
+  - "*.pii_raw_*"
