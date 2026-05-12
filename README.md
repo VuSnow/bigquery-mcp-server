@@ -1,4 +1,4 @@
-# bigquery-mcp-server
+# BigQuery-MCP-Server
 
 BigQuery MCP server with multi-connection support, security guardrails, and YAML-driven configuration. Designed as the **data access layer** for Text2SQL agents and AI data workflows.
 
@@ -52,8 +52,14 @@ bigquery-mcp-server/
 │       │       ├── __init__.py         # BigQueryService + singleton
 │       │       ├── base.py             # Routing, validation, access control
 │       │       ├── metadata.py         # MetadataService
-│       │       ├── query.py            # QueryService
+│       │       ├── query.py            # QueryService (pipeline integration)
 │       │       └── guardrails/         # Security sub-package
+│       │           ├── __init__.py     # GuardrailsPipeline orchestrator
+│       │           ├── security_validator.py
+│       │           ├── query_rewriter.py
+│       │           ├── rate_limiter.py
+│       │           ├── pii_masker.py
+│       │           └── audit_logger.py
 │       │
 │       ├── tools/bigquery/             # MCP tool definitions (thin layer)
 │       │
@@ -94,6 +100,58 @@ Agent calls: get_table_schema("analytics.fact_orders")
 3. OR fallback to bq.default_connection
 → Use prod-us client
 ```
+
+### Guardrails Pipeline
+
+Every `execute_query` call passes through the full guardrails pipeline:
+
+```
+┌─────────────── PRE-EXECUTE ───────────────┐
+│                                           │
+│  1. RateLimiter.check()                   │
+│     └─ Sliding window (max_calls/window)  │
+│                                           │
+│  2. SecurityValidator.validate()          │
+│     ├─ Query length check                 │
+│     ├─ Forbidden keywords (DROP, DELETE…)  │
+│     ├─ SQL injection patterns             │
+│     └─ Dangerous functions                │
+│                                           │
+│  3. QueryRewriter.rewrite()               │
+│     ├─ Inject LIMIT if missing            │
+│     ├─ Cap LIMIT to max_limit             │
+│     └─ Skip for pure aggregates           │
+│                                           │
+├───────────── EXECUTE QUERY ───────────────┤
+│                                           │
+│  BigQueryClient.execute_query()           │
+│                                           │
+├─────────────── POST-EXECUTE ──────────────┤
+│                                           │
+│  4. PIIMasker.mask_rows()                 │
+│     ├─ Hash (SHA-256 truncated)           │
+│     └─ Redact (***REDACTED***)            │
+│                                           │
+│  5. AuditLogger.log_query()              │
+│     └─ Structured log: query, rows,       │
+│        bytes, connection, timestamp        │
+│                                           │
+│  6. RateLimiter.record()                  │
+│                                           │
+└───────────────────────────────────────────┘
+```
+
+`dry_run_query` only applies **SecurityValidator** (no rewrite/PII/audit since no data is returned).
+
+#### Guardrails modules
+
+| Module | Class | Purpose |
+|--------|-------|---------|
+| `security_validator.py` | `SecurityValidator` | Static validation — forbidden keywords, injection patterns, dangerous functions, length |
+| `query_rewriter.py` | `QueryRewriter` | Auto LIMIT injection, max LIMIT cap, aggregate detection |
+| `rate_limiter.py` | `RateLimiter` | Sliding-window rate limiting (configurable calls/window) |
+| `pii_masker.py` | `PIIMasker` | Hash or redact PII columns in result rows |
+| `audit_logger.py` | `AuditLogger` | Structured audit trail for executed and blocked queries |
 
 ## Tools (9)
 

@@ -1,6 +1,6 @@
 """Query service: execute query, dry run, explain error, get status.
 
-Handles read-only enforcement, connection routing, and guardrails integration.
+Handles read-only enforcement, connection routing, and full guardrails pipeline.
 """
 from __future__ import annotations
 
@@ -8,15 +8,29 @@ import logging
 from typing import Any, Dict, Optional
 
 from .base import BaseBigQueryService
+from .guardrails import GuardrailsPipeline
 
 logger = logging.getLogger(__name__)
 
 
 class QueryService(BaseBigQueryService):
-    """Service for query execution with safety checks and multi-connection routing."""
+    """Service for query execution with guardrails pipeline and multi-connection routing."""
+
+    _pipeline: Optional[GuardrailsPipeline] = None
+
+    def _get_pipeline(self) -> GuardrailsPipeline:
+        """Lazy-init the guardrails pipeline from YAML config."""
+        if self._pipeline is None:
+            from bigquery_mcp.utils.config_parser import config_parser
+            guardrails_config = config_parser.get_guardrails()
+            pii_rules = config_parser.get_pii_rules()
+            self._pipeline = GuardrailsPipeline(guardrails_config, pii_rules)
+        return self._pipeline
 
     def execute_query(self, query: str, connection: Optional[str] = None) -> Dict[str, Any]:
-        """Execute a SQL query with safety enforcement.
+        """Execute a SQL query with full guardrails pipeline.
+
+        Pipeline: rate limit → security → rewrite → execute → PII mask → audit.
 
         Args:
             query: SQL query string.
@@ -28,9 +42,10 @@ class QueryService(BaseBigQueryService):
             return {"status": "error", "message": "Query cannot be empty."}
 
         query = query.strip()
-
-        # Read-only enforcement
+        conn_name = self._resolve_connection_name(connection=connection)
         guardrails = self._get_guardrails(connection)
+
+        # Read-only enforcement (fast check before pipeline)
         if guardrails.get("read_only", True):
             query_lower = query.lower()
             allowed_starts = ("select", "with")
@@ -40,33 +55,61 @@ class QueryService(BaseBigQueryService):
                     "message": "Only SELECT and WITH queries are allowed.",
                 }
 
-        # Get client (auto-route if no explicit connection)
-        client = self._get_client(connection=connection)
-        conn_name = self._resolve_connection_name(connection=connection)
+        # Guardrails pipeline: pre-execute
+        pipeline = self._get_pipeline()
+        pre_result = pipeline.pre_execute(query, conn_name)
 
+        if not pre_result["allowed"]:
+            return {
+                "status": "error",
+                "message": pre_result["error"],
+                "stage": pre_result["stage"],
+            }
+
+        executed_query = pre_result["query"]
+        modifications = pre_result["modifications"]
+
+        # Execute
+        client = self._get_client(connection=connection)
         max_bytes = guardrails.get("max_bytes_billed", 10_737_418_240)
 
         try:
-            rows = client.execute_query(query, max_bytes_billed=max_bytes)
+            rows = client.execute_query(executed_query, max_bytes_billed=max_bytes)
         except Exception as e:
             logger.error("[execute_query] Query failed: %s", e)
+            from .guardrails import AuditLogger
+            AuditLogger.log_query(
+                query=executed_query, connection=conn_name,
+                status="error", error=str(e),
+            )
             return {
                 "status": "error",
                 "message": f"Query execution failed: {str(e)}",
-                "query": query,
+                "query": executed_query,
             }
 
-        logger.info("[execute_query] Returned %d rows via '%s'", len(rows), conn_name)
-        return {
+        # Guardrails pipeline: post-execute (PII masking + audit)
+        post_result = pipeline.post_execute(rows, conn_name, executed_query, modifications)
+
+        logger.info("[execute_query] Returned %d rows via '%s'", len(post_result["rows"]), conn_name)
+        result: Dict[str, Any] = {
             "status": "ok",
             "connection": conn_name,
-            "rows": rows,
-            "count": len(rows),
-            "query": query,
+            "rows": post_result["rows"],
+            "count": len(post_result["rows"]),
+            "query": executed_query,
         }
+        if modifications:
+            result["modifications"] = modifications
+        if post_result["masked_fields"]:
+            result["masked_fields"] = post_result["masked_fields"]
+
+        return result
 
     def dry_run_query(self, query: str, connection: Optional[str] = None) -> Dict[str, Any]:
         """Dry-run a query to validate syntax and estimate cost.
+
+        Applies security validation but skips rewrite/PII/audit since no data is returned.
 
         Args:
             query: SQL query string to validate.
@@ -78,9 +121,10 @@ class QueryService(BaseBigQueryService):
             return {"status": "error", "message": "Query cannot be empty."}
 
         query = query.strip()
+        conn_name = self._resolve_connection_name(connection=connection)
+        guardrails = self._get_guardrails(connection)
 
         # Read-only enforcement
-        guardrails = self._get_guardrails(connection)
         if guardrails.get("read_only", True):
             query_lower = query.lower()
             allowed_starts = ("select", "with")
@@ -89,6 +133,13 @@ class QueryService(BaseBigQueryService):
                     "status": "error",
                     "message": "Only SELECT and WITH queries are allowed.",
                 }
+
+        # Security validation only (no rewrite for dry-run)
+        from .guardrails import SecurityValidator
+        max_length = guardrails.get("max_query_length", 10_000)
+        sec_result = SecurityValidator.validate(query, max_length=max_length)
+        if not sec_result["valid"]:
+            return {"status": "error", "message": sec_result["error"]}
 
         client = self._get_client(connection=connection)
         max_bytes = guardrails.get("max_bytes_billed", 10_737_418_240)
@@ -110,6 +161,7 @@ class QueryService(BaseBigQueryService):
         return {
             "status": "ok",
             "valid": True,
+            "connection": conn_name,
             "query": query,
             "estimation": estimation,
         }
@@ -171,6 +223,7 @@ class QueryService(BaseBigQueryService):
 
         guardrails = config_parser.get_guardrails()
         connections = connection_manager.get_status()
+        pipeline = self._get_pipeline()
 
         return {
             "status": "ok",
@@ -181,8 +234,9 @@ class QueryService(BaseBigQueryService):
                 "default_limit": guardrails.get("default_limit", 100),
                 "max_limit": guardrails.get("max_limit", 1000),
                 "max_bytes_billed": guardrails.get("max_bytes_billed"),
+                "max_query_length": guardrails.get("max_query_length", 10_000),
                 "forbid_cross_connection": guardrails.get("forbid_cross_connection", False),
-                "rate_limit": guardrails.get("rate_limit", {}),
+                "rate_limit": pipeline.rate_limiter.get_status(),
             },
             "blocked_tables": config_parser.get_blocked_tables(),
             "pii_rules_count": len(config_parser.get_pii_rules()),
