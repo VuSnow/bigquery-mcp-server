@@ -59,8 +59,11 @@ class MetadataService(BaseBigQueryService):
             "columns": schema,
             "column_count": len(schema),
         }
-        if info.get("time_partitioning"):
-            result["time_partitioning"] = info["time_partitioning"]
+        if info.get("partitioning_type"):
+            result["partitioning"] = {
+                "type": info["partitioning_type"],
+                "field": info.get("partitioning_field"),
+            }
         if info.get("clustering_fields"):
             result["clustering_fields"] = info["clustering_fields"]
         if info.get("num_rows") is not None:

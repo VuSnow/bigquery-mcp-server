@@ -27,14 +27,27 @@ class SecurityValidator:
     ]
     
     DANGEROUS_FUNCTIONS = [
-        "load_file", "into_dumpfile", "into_outline",
-        "benchmark", "sleep", "waitfor", "pg_sleep"
+        r"\bload_file\b", r"\binto_dumpfile\b", r"\binto_outline\b",
+        r"\bbenchmark\b", r"\bsleep\b", r"\bwaitfor\b", r"\bpg_sleep\b"
     ]
     
     @classmethod
+    def _remove_comments(cls, query: str) -> str:
+        """Remove SQL comments (-- line and /* block */) before validation."""
+        # Remove block comments /* ... */ (non-greedy, handles multiline)
+        q = re.sub(r"/\*.*?\*/", " ", query, flags=re.DOTALL)
+        # Remove line comments -- ...
+        q = re.sub(r"--[^\n]*", " ", q)
+        # Remove # line comments (MySQL style, rare but possible)
+        q = re.sub(r"#[^\n]*", " ", q)
+        return q
+
+    @classmethod
     def _remove_string_literals(cls, query: str) -> str:
-        q = re.sub(r"'[^']*'", "''", query)
-        q = re.sub(r'"[^"]*"', '""', q)
+        """Remove string literals, handling escaped/doubled quotes."""
+        # Handle doubled quotes: 'it''s ok' or "she said ""hi"""
+        q = re.sub(r"'(?:[^']|'')*'", "''", query)
+        q = re.sub(r'"(?:[^"]|"")*"', '""', q)
         q = re.sub(r"`[^`]*`", "``", q)
         return q
 
@@ -52,17 +65,18 @@ class SecurityValidator:
         if not any(query_lower.startswith(s) for s in allowed_starts):
             return {"valid": False, "error": "Only SELECT/WITH/SHOW/DESCRIBE/EXPLAIN allowed."}
         
-        stripped = cls._remove_string_literals(query_clean).lower()
+        stripped = cls._remove_comments(cls._remove_string_literals(query_clean)).lower()
         for kw in cls.FORBIDDEN_KEYWORDS:
             if re.search(rf"\b{re.escape(kw)}\b", stripped):
                 return {"valid": False, "error": f"Forbidden operation: '{kw}'."}
             
         for pattern in cls.SUSPICIOUS_PATTERNS:
-            if re.search(pattern, query_lower, re.IGNORECASE | re.DOTALL):
-                return {"valid": False, "error": f"Suspicious pattern detected '{pattern}'."}
+            if re.search(pattern, stripped, re.IGNORECASE | re.DOTALL):
+                return {"valid": False, "error": f"Suspicious pattern detected."}
             
-        if any(f in query_lower for f in cls.DANGEROUS_FUNCTIONS):
-            return {"valid": False, "error": f"Dangerous function detected."}
+        for pattern in cls.DANGEROUS_FUNCTIONS:
+            if re.search(pattern, stripped, re.IGNORECASE):
+                return {"valid": False, "error": "Dangerous function detected."}
         
-        return {"valid": True, "santizied_query": query_clean}
+        return {"valid": True, "sanitized_query": query_clean}
             

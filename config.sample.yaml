@@ -32,6 +32,7 @@ guardrails:
   max_limit: 1000
   max_bytes_billed: 10737418240      # 10 GiB global default
   max_query_length: 10000
+  query_timeout_seconds: 300         # max execution time per query (seconds)
   forbid_cross_connection: true      # block queries spanning multiple connections
   rate_limit:
     max_calls: 100

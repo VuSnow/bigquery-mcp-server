@@ -159,10 +159,8 @@ def get_status() -> str:
     lines.append("")
     lines.append("Connections:")
     connections = result.get("connections", {})
-    for name, info in connections.items():
-        status = info.get("status", "unknown")
-        project = info.get("project", "?")
-        lines.append(f"  - {name}: {status} (project: {project})")
+    for name, state in connections.items():
+        lines.append(f"  - {name}: {state}")
 
     # Guardrails
     lines.append("")
@@ -180,7 +178,7 @@ def get_status() -> str:
     # Rate limit
     rl = g.get("rate_limit", {})
     if rl:
-        lines.append(f"  Rate limit: {rl.get('used', 0)}/{rl.get('max_calls', '?')} "
+        lines.append(f"  Rate limit: {rl.get('calls_used', 0)}/{rl.get('limit', '?')} "
                       f"(window: {rl.get('window_seconds', '?')}s)")
 
     # PII / blocked

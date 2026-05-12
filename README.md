@@ -21,7 +21,7 @@ BigQuery MCP server with multi-connection support, security guardrails, and YAML
 - **Cross-connection protection**: Block queries spanning multiple connections
 - **PII masking**: Hash/redact sensitive columns in query results
 - **Rate limiting**: Per-client rate limits
-- **Read-only enforcement**: Only SELECT/WITH queries allowed
+- **Read-only enforcement**: Only SELECT/WITH/SHOW/DESCRIBE/EXPLAIN queries allowed
 - **Blocked tables**: Glob-pattern deny list
 
 ## Project Structure
@@ -111,23 +111,26 @@ Every `execute_query` call passes through the full guardrails pipeline:
 ```
 ┌─────────────── PRE-EXECUTE ───────────────┐
 │                                           │
-│  1. RateLimiter.check()                   │
-│     └─ Sliding window (max_calls/window)  │
+│  1. RateLimiter.check_and_reserve()       │
+│     └─ Sliding window (atomic check+slot) │
 │                                           │
 │  2. SecurityValidator.validate()          │
 │     ├─ Query length check                 │
+│     ├─ Read-only starts-with check        │
+│     ├─ Strip comments & string literals   │
 │     ├─ Forbidden keywords (DROP, DELETE…)  │
 │     ├─ SQL injection patterns             │
 │     └─ Dangerous functions                │
 │                                           │
 │  3. QueryRewriter.rewrite()               │
 │     ├─ Inject LIMIT if missing            │
-│     ├─ Cap LIMIT to max_limit             │
-│     └─ Skip for pure aggregates           │
+│     ├─ Cap LIMIT to max_limit (outer only)│
+│     └─ Skip for pure aggregates (w/ alias)│
 │                                           │
 ├───────────── EXECUTE QUERY ───────────────┤
 │                                           │
 │  BigQueryClient.execute_query()           │
+│     └─ timeout on .result() (not .query())│
 │                                           │
 ├─────────────── POST-EXECUTE ──────────────┤
 │                                           │
@@ -139,8 +142,6 @@ Every `execute_query` call passes through the full guardrails pipeline:
 │     └─ Structured log: query, rows,       │
 │        bytes, connection, timestamp        │
 │                                           │
-│  6. RateLimiter.record()                  │
-│                                           │
 └───────────────────────────────────────────┘
 ```
 
@@ -150,10 +151,10 @@ Every `execute_query` call passes through the full guardrails pipeline:
 
 | Module | Class | Purpose |
 |--------|-------|---------|
-| `security_validator.py` | `SecurityValidator` | Static validation — forbidden keywords, injection patterns, dangerous functions, length |
-| `query_rewriter.py` | `QueryRewriter` | Auto LIMIT injection, max LIMIT cap, aggregate detection |
-| `rate_limiter.py` | `RateLimiter` | Sliding-window rate limiting (configurable calls/window) |
-| `pii_masker.py` | `PIIMasker` | Hash or redact PII columns in result rows |
+| `security_validator.py` | `SecurityValidator` | Static validation — forbidden keywords, injection patterns, dangerous functions, length. Strips SQL comments and handles escaped/doubled quotes to avoid false positives. |
+| `query_rewriter.py` | `QueryRewriter` | Auto LIMIT injection, max LIMIT cap (targets outer query, not subqueries), aggregate detection, CTE-aware, handles trailing comments |
+| `rate_limiter.py` | `RateLimiter` | Thread-safe sliding-window rate limiting (configurable calls/window) |
+| `pii_masker.py` | `PIIMasker` | Case-insensitive hash or redact PII columns in result rows |
 | `audit_logger.py` | `AuditLogger` | Structured audit trail for executed and blocked queries |
 
 ## Tools (9)
@@ -218,8 +219,8 @@ Query is valid.
 Server Status:
   Default connection: prod-us
 Connections:
-  - prod-us: connected (project: your-prod-project)
-  - staging-eu: not initialized (project: your-staging-project)
+  - prod-us: connected
+  - staging-eu: disconnected
 Guardrails:
   Read-only: True
   Default LIMIT: 100
@@ -261,6 +262,7 @@ guardrails:
   max_limit: 1000
   max_bytes_billed: 10737418240      # 10 GiB global
   max_query_length: 10000
+  query_timeout_seconds: 300         # max execution time per query
   forbid_cross_connection: true
   rate_limit:
     max_calls: 100
@@ -305,16 +307,94 @@ Global (guardrails section)
 ## Quick Start
 
 ```bash
-# Install
+# Install in editable mode
 pip install -e ".[dev]"
 
 # Create config
 cp config.sample.yaml config.yaml
 # Edit config.yaml with your project/credentials
 
-# Run
+# Run server (stdio transport)
 fastmcp run src/bigquery_mcp/server.py:mcp
+
+# Or use FastMCP dev UI
+fastmcp dev src/bigquery_mcp/server.py:mcp
 ```
+
+## MCP Inspector
+
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector) is a browser-based tool for interactively testing MCP servers and their tools.
+
+```bash
+# Run MCP Inspector against this server (npx, no install required)
+npx @modelcontextprotocol/inspector fastmcp run src/bigquery_mcp/server.py:mcp
+```
+
+Then open `http://localhost:6274` in your browser. From there you can:
+- Browse all 9 registered tools and their input schemas
+- Call tools manually and inspect structured responses
+- Debug tool outputs without needing a full MCP client
+
+> **Note**: Ensure `config.yaml` exists with valid BigQuery credentials before running.
+
+### Install Node.js (required for npx)
+
+**macOS**
+```bash
+brew install node
+```
+
+**Ubuntu / Debian**
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
+
+**Windows**
+
+Download and run the installer from [nodejs.org](https://nodejs.org).
+
+Verify installation:
+```bash
+node --version   # should be ≥ 18
+npx --version
+```
+
+## Testing
+
+```bash
+# Install test dependencies
+pip install -e ".[dev]"
+
+# Run all unit tests
+python -m pytest test/ -v
+
+# Run specific test file
+python -m pytest test/test_security_validator.py -v
+
+# Run with short traceback
+python -m pytest test/ --tb=short
+
+# Run with coverage (if pytest-cov installed)
+python -m pytest test/ --cov=bigquery_mcp --cov-report=term-missing
+```
+
+> **Note**: Tests mock all BigQuery interactions — no running BigQuery instance or GCP credentials required for unit tests.
+
+**196 tests — all passing.**
+
+| Test File | Tests | Coverage Area |
+|-----------|-------|---------------|
+| `test_security_validator.py` | 47 | Forbidden keywords, injection patterns, dangerous functions, SQL comments, escaped quotes, exotic bypass attempts (CRLF, null byte, unicode, backtick identifiers) |
+| `test_query_rewriter.py` | 36 | LIMIT injection/capping, aggregate detection (with aliases), CTE handling, trailing comments, subquery preservation, UNION, OFFSET, string-literal LIMIT, huge numbers |
+| `test_services.py` | 32 | MetadataService + QueryService, timeout semantics, table/column name injection validation |
+| `test_config_parser.py` | 20 | Connections, routing, guardrails layering, PII, blocked tables |
+| `test_pii_masker.py` | 15 | Hash, redact, multiple rules, null/empty edge cases, case-insensitive matching |
+| `test_tools.py` | 13 | Output formatting for all 9 MCP tools |
+| `test_guardrails_pipeline.py` | 11 | End-to-end pre/post-execute orchestration |
+| `test_rate_limiter.py` | 9 | Sliding window, expiration, status reporting, thread-safety under concurrent load |
+| `test_connection_manager.py` | 7 | Lazy init, reuse, disconnect, error handling |
+| `test_audit_logger.py` | 6 | Query logging, blocked logging, error truncation |
 
 ## Implementation Status
 
@@ -326,7 +406,9 @@ fastmcp run src/bigquery_mcp/server.py:mcp
 | 4 | ✅ | Multi-connection + YAML-driven config |
 | 5 | ✅ | Guardrails pipeline (security, rewriter, rate limiter, PII masker, audit) |
 | 6 | ✅ | Tools layer (9 MCP tools) |
-| 7 | 🔲 | Unit tests |
+| 7 | ✅ | Unit tests (196 tests) |
+| 8 | ✅ | Production hardening (comment-aware validation, CTE-safe rewriting, case-insensitive PII, parallel metadata fetching) |
+| 9 | ✅ | Deep investigation & fixes (timeout semantics, aliased aggregate detection, exotic bypass testing, input validation coverage) |
 
 ## License
 

@@ -57,8 +57,8 @@ class GuardrailsPipeline:
             {"allowed": True, "query": rewritten_query, "modifications": [...]}
             OR {"allowed": False, "error": "...", "stage": "..."}
         """
-        # 1. Rate limit
-        rate_check = self._rate_limiter.check()
+        # 1. Rate limit (atomic check + reserve)
+        rate_check = self._rate_limiter.check_and_reserve()
         if not rate_check["allowed"]:
             AuditLogger.log_blocked(
                 query=query, connection=connection,
@@ -90,9 +90,6 @@ class GuardrailsPipeline:
         rewrite_result = QueryRewriter.rewrite(
             query, default_limit=default_limit, max_limit=max_limit,
         )
-
-        # Record the call after passing all checks
-        self._rate_limiter.record()
 
         return {
             "allowed": True,

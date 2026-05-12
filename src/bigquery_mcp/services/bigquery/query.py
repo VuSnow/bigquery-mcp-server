@@ -48,11 +48,11 @@ class QueryService(BaseBigQueryService):
         # Read-only enforcement (fast check before pipeline)
         if guardrails.get("read_only", True):
             query_lower = query.lower()
-            allowed_starts = ("select", "with")
+            allowed_starts = ("select", "with", "show", "describe", "explain")
             if not any(query_lower.startswith(s) for s in allowed_starts):
                 return {
                     "status": "error",
-                    "message": "Only SELECT and WITH queries are allowed.",
+                    "message": "Only read-only queries (SELECT/WITH/SHOW/DESCRIBE/EXPLAIN) are allowed.",
                 }
 
         # Guardrails pipeline: pre-execute
@@ -72,9 +72,10 @@ class QueryService(BaseBigQueryService):
         # Execute
         client = self._get_client(connection=connection)
         max_bytes = guardrails.get("max_bytes_billed", 10_737_418_240)
+        timeout = guardrails.get("query_timeout_seconds", 300.0)
 
         try:
-            rows = client.execute_query(executed_query, max_bytes_billed=max_bytes)
+            rows = client.execute_query(executed_query, max_bytes_billed=max_bytes, timeout=timeout)
         except Exception as e:
             logger.error("[execute_query] Query failed: %s", e)
             from .guardrails import AuditLogger
@@ -127,11 +128,11 @@ class QueryService(BaseBigQueryService):
         # Read-only enforcement
         if guardrails.get("read_only", True):
             query_lower = query.lower()
-            allowed_starts = ("select", "with")
+            allowed_starts = ("select", "with", "show", "describe", "explain")
             if not any(query_lower.startswith(s) for s in allowed_starts):
                 return {
                     "status": "error",
-                    "message": "Only SELECT and WITH queries are allowed.",
+                    "message": "Only read-only queries (SELECT/WITH/SHOW/DESCRIBE/EXPLAIN) are allowed.",
                 }
 
         # Security validation only (no rewrite for dry-run)

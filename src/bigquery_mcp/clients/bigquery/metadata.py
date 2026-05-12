@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from .base import BaseBigQueryClient
@@ -13,19 +14,37 @@ class MetadataClient(BaseBigQueryClient):
     """Mixin for dataset/table metadata operations via BigQuery API."""
 
     def list_datasets(self) -> List[Dict[str, Any]]:
-        """List all datasets in the project."""
+        """List all datasets in the project with location info.
+
+        Fetches dataset details in parallel (max 5 concurrent) to avoid
+        sequential N+1 API calls.
+        """
         datasets = list(self._client.list_datasets())
-        return [
-            {
+        if not datasets:
+            return []
+
+        def _fetch_entry(ds) -> Dict[str, Any]:
+            entry: Dict[str, Any] = {
                 "dataset_id": ds.dataset_id,
                 "project": ds.project,
                 "full_id": f"{ds.project}.{ds.dataset_id}",
             }
-            for ds in datasets
-        ]
+            try:
+                full_ds = self._client.get_dataset(ds.reference)
+                entry["location"] = full_ds.location
+                if full_ds.description:
+                    entry["description"] = full_ds.description
+            except Exception:
+                pass
+            return entry
+
+        with ThreadPoolExecutor(max_workers=min(5, len(datasets))) as executor:
+            results = list(executor.map(_fetch_entry, datasets))
+
+        return results
 
     def list_tables(self, dataset: str) -> List[Dict[str, Any]]:
-        """List all tables in a dataset."""
+        """List all tables in a dataset with row counts."""
         tables = list(self._client.list_tables(dataset))
         return [
             {
@@ -33,6 +52,8 @@ class MetadataClient(BaseBigQueryClient):
                 "dataset_id": dataset,
                 "full_id": f"{t.project}.{dataset}.{t.table_id}",
                 "table_type": t.table_type,
+                "num_rows": t.num_rows,
+                "num_bytes": t.num_bytes,
             }
             for t in tables
         ]

@@ -17,7 +17,8 @@ class PIIMasker:
         Args:
             rules: List of {"column": "email", "method": "hash"|"redact"}
         """
-        self._rules = {r["column"]: r["method"] for r in rules if "column" in r and "method" in r}
+        # Store rules with lowercase keys for case-insensitive matching
+        self._rules = {r["column"].lower(): r["method"] for r in rules if "column" in r and "method" in r}
 
     @property
     def has_rules(self) -> bool:
@@ -38,19 +39,29 @@ class PIIMasker:
         masked_fields: list[str] = []
         modifications = 0
 
+        # Create copies to avoid mutating original data
+        masked_rows = []
         for row in rows:
+            new_row = dict(row)
             for column, method in self._rules.items():
-                if column in row and row[column] is not None:
+                # Case-insensitive column matching
+                matched_key = None
+                for key in new_row:
+                    if key.lower() == column:
+                        matched_key = key
+                        break
+                if matched_key and new_row[matched_key] is not None:
                     if column not in masked_fields:
                         masked_fields.append(column)
-                    row[column] = self._apply_mask(row[column], method)
+                    new_row[matched_key] = self._apply_mask(new_row[matched_key], method)
                     modifications += 1
+            masked_rows.append(new_row)
 
         if masked_fields:
             logger.info("[pii] Masked %d values across fields: %s", modifications, masked_fields)
 
         return {
-            "rows": rows,
+            "rows": masked_rows,
             "masked_fields": masked_fields,
             "modifications": modifications,
         }

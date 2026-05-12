@@ -30,8 +30,8 @@ class QueryClient(BaseBigQueryClient):
         job_config = bigquery.QueryJobConfig(
             maximum_bytes_billed=max_bytes_billed,
         )
-        query_job = self._client.query(query, job_config=job_config, timeout=timeout)
-        result = query_job.result()
+        query_job = self._client.query(query, job_config=job_config)
+        result = query_job.result(timeout=timeout)
         return [dict(row) for row in result]
 
     def dry_run(
@@ -51,7 +51,7 @@ class QueryClient(BaseBigQueryClient):
             maximum_bytes_billed=max_bytes_billed,
         )
         query_job = self._client.query(query, job_config=job_config)
-        return {
+        result = {
             "total_bytes_processed": query_job.total_bytes_processed,
             "total_bytes_billed": query_job.total_bytes_billed,
             "cache_hit": query_job.cache_hit,
@@ -65,12 +65,20 @@ class QueryClient(BaseBigQueryClient):
                 for ref in (query_job.referenced_tables or [])
             ],
         }
+        # Include output schema if available
+        if query_job.schema:
+            result["schema"] = [
+                {"name": field.name, "type": field.field_type}
+                for field in query_job.schema
+            ]
+        return result
 
     def get_distinct_values(
         self,
         table_ref: str,
         column: str,
         limit: int = 50,
+        timeout: Optional[float] = 60.0,
     ) -> List[Any]:
         """Get distinct values for a column.
 
@@ -78,6 +86,7 @@ class QueryClient(BaseBigQueryClient):
             table_ref: Fully qualified table name.
             column: Column name to get distinct values for.
             limit: Maximum number of distinct values.
+            timeout: Query timeout in seconds.
         """
         query = (
             f"SELECT DISTINCT `{column}` "
@@ -86,5 +95,5 @@ class QueryClient(BaseBigQueryClient):
             f"ORDER BY `{column}` "
             f"LIMIT {int(limit)}"
         )
-        result = self._client.query(query).result()
+        result = self._client.query(query).result(timeout=timeout)
         return [row[0] for row in result]

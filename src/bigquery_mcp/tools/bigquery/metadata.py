@@ -98,8 +98,8 @@ def get_table_schema(table_name: str, connection: Optional[str] = None) -> str:
 
     if result.get("num_rows") is not None:
         lines.append(f"  Total rows: {result['num_rows']:,}")
-    if result.get("time_partitioning"):
-        tp = result["time_partitioning"]
+    if result.get("partitioning"):
+        tp = result["partitioning"]
         lines.append(f"  Partitioned by: {tp.get('field', 'ingestion time')} ({tp.get('type', 'DAY')})")
     if result.get("clustering_fields"):
         lines.append(f"  Clustered by: {', '.join(result['clustering_fields'])}")
