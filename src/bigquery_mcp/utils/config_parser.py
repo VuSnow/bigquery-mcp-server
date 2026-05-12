@@ -1,6 +1,7 @@
-"""YAML config parser — loads and caches config.yaml for guardrails and table definitions."""
+"""YAML config parser — loads and caches config.yaml for guardrails, blocked tables, PII."""
 from __future__ import annotations
 
+import fnmatch
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -46,12 +47,16 @@ class ConfigParser:
         logger.info("Loaded config from %s", path)
         return config
 
+    def get_settings(self) -> Dict[str, Any]:
+        """Get settings section."""
+        return self._config.get("settings", {})
+
     def get_tables(self) -> List[Dict[str, Any]]:
-        """Get all table definitions from config."""
+        """Get all table constraint definitions from config."""
         return self._config.get("tables", [])
 
     def get_table_config(self, table_name: str) -> Optional[Dict[str, Any]]:
-        """Get config for a specific table by name."""
+        """Get constraints config for a specific table by name."""
         for table in self.get_tables():
             if table.get("name") == table_name:
                 return table
@@ -65,9 +70,20 @@ class ConfigParser:
         """Get PII masking configuration."""
         return self._config.get("pii_masking", [])
 
-    def get_bigquery_config(self) -> Dict[str, Any]:
-        """Get BigQuery connection config from YAML."""
-        return self._config.get("bigquery", {})
+    def get_blocked_tables(self) -> List[str]:
+        """Get blocked tables list (supports glob patterns)."""
+        return self._config.get("blocked_tables", [])
+
+    def is_table_blocked(self, table_name: str) -> bool:
+        """Check if a table matches any blocked pattern."""
+        for pattern in self.get_blocked_tables():
+            if fnmatch.fnmatch(table_name, pattern):
+                return True
+        return False
+
+    def get_whitelisted_table_names(self) -> List[str]:
+        """Get list of table names defined in YAML (for yaml_only mode)."""
+        return [t.get("name") for t in self.get_tables() if t.get("name")]
 
 
 # Singleton instance

@@ -65,3 +65,26 @@ class QueryClient(BaseBigQueryClient):
                 for ref in (query_job.referenced_tables or [])
             ],
         }
+
+    def get_distinct_values(
+        self,
+        table_ref: str,
+        column: str,
+        limit: int = 50,
+    ) -> List[Any]:
+        """Get distinct values for a column.
+
+        Args:
+            table_ref: Fully qualified table name.
+            column: Column name to get distinct values for.
+            limit: Maximum number of distinct values.
+        """
+        query = (
+            f"SELECT DISTINCT `{column}` "
+            f"FROM `{table_ref}` "
+            f"WHERE `{column}` IS NOT NULL "
+            f"ORDER BY `{column}` "
+            f"LIMIT {int(limit)}"
+        )
+        result = self._client.query(query).result()
+        return [row[0] for row in result]

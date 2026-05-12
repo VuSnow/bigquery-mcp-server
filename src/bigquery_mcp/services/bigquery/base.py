@@ -82,3 +82,23 @@ class BaseBigQueryService:
                 f"Dataset '{dataset}' is not in the allowed list. "
                 f"Allowed: {', '.join(allowed)}"
             )
+
+    def _check_table_accessible(self, table_name: str) -> None:
+        """Raise if table is blocked or not accessible in current mode.
+
+        Checks:
+        1. Blocked tables (always enforced)
+        2. In yaml_only mode: table must be in YAML whitelist
+        """
+        from bigquery_mcp.utils.config_parser import config_parser
+
+        if config_parser.is_table_blocked(table_name):
+            raise PermissionError(f"Table '{table_name}' is blocked by configuration.")
+
+        if configs.table_access_mode == "yaml_only":
+            whitelisted = config_parser.get_whitelisted_table_names()
+            if table_name not in whitelisted:
+                raise PermissionError(
+                    f"Table '{table_name}' is not in the YAML whitelist. "
+                    f"Access mode is 'yaml_only'."
+                )

@@ -1,10 +1,9 @@
 """BigQuery service — combines all operation mixins."""
 from .metadata import MetadataService
-from .discovery import DiscoveryService
 from .query import QueryService
 
 
-class BigQueryService(MetadataService, DiscoveryService, QueryService):
+class BigQueryService(MetadataService, QueryService):
     """Full BigQuery service. Combines all operation mixins."""
     pass
 
