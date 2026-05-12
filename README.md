@@ -62,6 +62,9 @@ bigquery-mcp-server/
 │       │           └── audit_logger.py
 │       │
 │       ├── tools/bigquery/             # MCP tool definitions (thin layer)
+│       │   ├── __init__.py             # Auto-registers all tools
+│       │   ├── metadata.py             # list_datasets, list_tables, get_table_schema, describe_table, get_column_values
+│       │   └── query.py                # dry_run_query, execute_query, explain_query_error, get_status
 │       │
 │       └── utils/
 │           └── config_parser.py        # YAML parser (connections, routing, guardrails)
@@ -155,6 +158,8 @@ Every `execute_query` call passes through the full guardrails pipeline:
 
 ## Tools (9)
 
+### Metadata Tools
+
 | # | Tool | Description |
 |---|------|-------------|
 | 1 | `list_datasets` | List datasets for a connection (or default) |
@@ -162,10 +167,65 @@ Every `execute_query` call passes through the full guardrails pipeline:
 | 3 | `get_table_schema` | Column definitions + partition/clustering info |
 | 4 | `describe_table` | Live DDL (CREATE TABLE statement) |
 | 5 | `get_column_values` | Distinct values for a column (live query) |
-| 6 | `dry_run_query` | Validate SQL + estimate bytes/cost |
-| 7 | `execute_query` | Run query with guardrails pipeline |
-| 8 | `explain_query_error` | Parse BQ error + suggest fix |
-| 9 | `get_status` | Connections health, guardrail config |
+
+### Query Tools
+
+| # | Tool | Description |
+|---|------|-------------|
+| 6 | `dry_run_query` | Validate SQL + estimate bytes/cost (no execution) |
+| 7 | `execute_query` | Run query with full guardrails pipeline |
+| 8 | `explain_query_error` | Parse BQ error + suggest fix for retry loops |
+| 9 | `get_status` | Connections health, guardrail config, rate limit usage |
+
+### Tool Parameters
+
+All metadata tools accept an optional `connection` parameter. If omitted, auto-routing resolves the connection:
+
+```python
+# Explicit connection
+list_tables(dataset="analytics", connection="prod-us")
+
+# Auto-route (resolves from YAML config)
+get_table_schema(table_name="analytics.fact_orders")
+
+# Dry run before executing
+dry_run_query(query="SELECT * FROM analytics.fact_orders WHERE order_date > '2024-01-01'")
+
+# Execute with guardrails
+execute_query(query="SELECT customer_id, email, total FROM analytics.fact_orders LIMIT 10")
+# → email column auto-masked by PII rules
+```
+
+### Output Format
+
+All tools return **LLM-friendly strings** (not raw dicts). Examples:
+
+```
+# list_datasets output
+Datasets on 'prod-us' (3):
+  - analytics  (location: US)
+  - sales  (location: US)
+  - marketing  (location: US)
+
+# dry_run_query output
+Query is valid.
+  Connection: prod-us
+  Estimated bytes: 1.23 GiB (1,321,205,760 bytes)
+  Referenced tables: analytics.fact_orders
+  Output columns: customer_id (INTEGER), email (STRING), total (FLOAT)
+
+# get_status output
+Server Status:
+  Default connection: prod-us
+Connections:
+  - prod-us: connected (project: your-prod-project)
+  - staging-eu: not initialized (project: your-staging-project)
+Guardrails:
+  Read-only: True
+  Default LIMIT: 100
+  Max LIMIT: 1000
+  Rate limit: 3/100 (window: 3600s)
+```
 
 ## Configuration
 
@@ -264,10 +324,9 @@ fastmcp run src/bigquery_mcp/server.py:mcp
 | 2 | ✅ | Client layer (metadata + query + ddl) |
 | 3 | ✅ | Service layer (connection manager + metadata + query) |
 | 4 | ✅ | Multi-connection + YAML-driven config |
-| 5 | 🔲 | Guardrails pipeline (security, rewriter, rate limiter) |
-| 6 | 🔲 | PII masker |
-| 7 | 🔲 | Tools layer (9 MCP tools) |
-| 8 | 🔲 | Unit tests |
+| 5 | ✅ | Guardrails pipeline (security, rewriter, rate limiter, PII masker, audit) |
+| 6 | ✅ | Tools layer (9 MCP tools) |
+| 7 | 🔲 | Unit tests |
 
 ## License
 
